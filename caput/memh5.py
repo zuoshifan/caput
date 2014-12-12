@@ -643,10 +643,34 @@ class MemDiskGroup(collections.Mapping):
         return self.__class__.from_file(h5_file, ondisk=True, **kwargs)
 
     def close(self):
-        """Close underlying hdf5 file if on disk."""
+        """Close and cleanup MemDiskGroup.
+
+        Closes underlying hdf5 file if on disk, or if in memory cleans up the
+        cyclic reference to allow memory to be freed."""
 
         if self.ondisk:
             self._data.close()
+        else:
+
+            # Recursive function to destroy reference cycles in the Mem
+            # objects that prevent it being freed
+            def _clean_memgroup(mg):
+
+                # Remove back references
+                mg._parent = None
+                mg._root = None
+
+                for key, child in mg.items():
+                    if isinstance(child, MemGroup):
+                        # Recurse into cleanup of group.
+                        _clean_memgroup(child)
+                    elif isinstance(child, MemDataset):
+                        # Remove back references from dataset
+                        child._parent = None
+                        child._root = None
+
+            # Start on the _data group
+            _clean_memgroup(self._data)
 
     def flush(self):
         """Flush the buffers of the underlying hdf5 file if on disk."""
