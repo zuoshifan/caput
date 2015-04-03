@@ -111,7 +111,7 @@ class Property(object):
         obj.__dict__[self.propname] = self.proptype(val)
 
 
-    def _from_config(self, obj, config):
+    def _from_config(self, obj, config, propname):
         """Load the configuration from the supplied dictionary.
 
         Parameters
@@ -122,7 +122,8 @@ class Property(object):
             Dictionary of configuration values.
         """
 
-        self._set_propname(obj)
+        # self._set_propname(obj)
+        self.propname = propname
 
         if self.key is None:
             self.key = self.propname
@@ -138,9 +139,11 @@ class Property(object):
         import inspect
 
         if self.propname is None:
-            for basecls in inspect.getmro(type(obj))[::-1]:
+            assigned_propname = []
+            for basecls in inspect.getmro(type(obj)):
                 for propname, clsprop in basecls.__dict__.items():
-                    if isinstance(clsprop, Property) and clsprop == self:
+                    if isinstance(clsprop, Property) and not propname in assigned_propname and clsprop == self:
+                        assigned_propname.append(propname)
                         self.propname = propname
 
 
@@ -173,10 +176,12 @@ class Reader(object):
         """
         import inspect
 
-        for basecls in inspect.getmro(type(self))[::-1]:
+        assigned_propname = []
+        for basecls in inspect.getmro(type(self)):
             for propname, clsprop in basecls.__dict__.items():
-                if isinstance(clsprop, Property):
-                    clsprop._from_config(self, config)
+                if isinstance(clsprop, Property) and not propname in assigned_propname:
+                    assigned_propname.append(propname)
+                    clsprop._from_config(self, config, propname)
 
         self._finalise_config()
 
