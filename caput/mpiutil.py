@@ -38,6 +38,8 @@ _comm = None
 world = None
 rank0 = True
 
+SUM = None
+
 ## Try to setup MPI and get the comm, rank and size.
 ## If not they should end up as rank=0, size=1.
 try:
@@ -48,6 +50,8 @@ try:
     
     rank = _comm.Get_rank()
     size = _comm.Get_size()
+
+    SUM = MPI.SUM
 
     if rank:
         print "MPI process %i of %i." % (rank, size)
@@ -92,6 +96,20 @@ def barrier():
     if size > 1:
         _comm.Barrier()
 
+
+def Gatherv(sendbuf, recvbuf, root=0):
+    if size > 1:
+        _comm.Gatherv(sendbuf, recvbuf, root=root)
+    else:
+        recvbuf[0][...] = sendbuf[0][...]
+
+
+def Allreduce(sendbuf, recvbuf, op=SUM):
+    if size > 1:
+        _comm.Allreduce(sendbuf, recvbuf, op=op)
+    else:
+        recvbuf[...] = sendbuf[...]
+        
 
 def parallel_map(func, glist):
     """Apply a parallel map using MPI.
