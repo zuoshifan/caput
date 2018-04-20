@@ -23,6 +23,7 @@ Functions
    mpirange
    barrier
    bcast
+   reduce
    allreduce
    gather_list
    parallel_map
@@ -194,6 +195,13 @@ def bcast(data, root=0, comm=_comm):
         return comm.bcast(data, root=root)
     else:
         return data
+
+
+def reduce(sendobj, root=0, op=None, comm=_comm):
+    if comm is not None and comm.size > 1:
+        return comm.reduce(sendobj, root=root, op=(op or MPI.SUM))
+    else:
+        return sendobj
 
 
 def allreduce(sendobj, op=None, comm=_comm):
