@@ -165,9 +165,9 @@ def partition_list_mpi(full_list, method='con', comm=_comm):
     if method == 'rand':
         perm = None
         if rank == 0:
-            perm = np.random.permutation(len(full_list))
+            perm = np.random.permutation(max(len(full_list), size))
         choices = scatter_array(perm, root=0, comm=comm)
-        return [ full_list[i] for i in choices ]
+        return [ full_list[i] for i in choices if i < len(full_list) ]
     else:
         return partition_list(full_list, rank, size, method=method)
 
