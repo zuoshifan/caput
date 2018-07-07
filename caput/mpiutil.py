@@ -467,8 +467,13 @@ def gather_local(global_array, local_array, local_start, root=0, comm=_comm):
                 sreq.Wait()
 
         if root is None:
-            for rt in range(comm.size):
-                _gather(rt)
+            # for rt in range(comm.size):
+            #     _gather(rt)
+
+            # first gather to process 0
+            _gather(0)
+            # than bcast to others
+            comm.Bcast(global_array, root=0)
         else:
             _gather(root)
 
