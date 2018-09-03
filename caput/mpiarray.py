@@ -445,72 +445,97 @@ class MPIArray(np.ndarray):
 
         return dist_arr
 
-    def redistribute(self, axis):
+    def redistribute(self, axis, copy=False, chunk_size=16.0, verbose=True):
         """Change the axis that the array is distributed over.
 
         Parameters
         ----------
         axis : integer
-            Axis to distribute over.
+            Axis to distribute over. Can be the same as the original axis.
+        copy : bool, optimal
+            If no need to redistribute, return a copy of `local_array` when True,
+            or just return `local_array` itself when False. Default False.
+        chunk_size: float
+            Communicate less or equal than this amount of data (in GB) each time.
+        verbose : bool, optimal
+            Whether output some additional information during the executing.
 
         Returns
         -------
         array : MPIArray
-            A new copy of the array distributed over the specified axis. Note
-            that the local section will have changed.
+            An array distributed over the specified axis.
         """
 
-        # Check to see if this is the current distributed axis
-        if self.axis == axis or self.comm is None:
-            return self
+        new_local_array = mpiutil.redistribute(self.local_array, self.axis, axis, copy=copy, chunk_size=chunk_size, verbose=verbose, comm=self.comm)
 
-        # Test to see if the datatype is one understood by MPI, this can
-        # probably be fixed up at somepoint by creating a datatype of the right
-        # number of bytes
-        try:
-            mpiutil.typemap(self.dtype)
-        except KeyError:
-            if self.comm is None or self.comm.rank == 0:
-                import warnings
-                warnings.warn('Cannot redistribute array of compound datatypes. Sorry!!')
-            return self
+        return MPIArray.wrap(new_local_array, axis, comm=self.comm)
 
-        # Construct the list of the axes to swap around
-        axlist_f = list(range(len(self.shape)))
+    # def redistribute(self, axis):
+    #     """Change the axis that the array is distributed over.
 
-        # Remove the axes we are going to swap around
-        axlist_f.remove(self.axis)
-        axlist_f.remove(axis)
+    #     Parameters
+    #     ----------
+    #     axis : integer
+    #         Axis to distribute over.
 
-        # Move the current dist axis to the front, and the new to the end
-        axlist_f.insert(0, self.axis)
-        axlist_f.append(axis)
+    #     Returns
+    #     -------
+    #     array : MPIArray
+    #         A new copy of the array distributed over the specified axis. Note
+    #         that the local section will have changed.
+    #     """
 
-        # Perform a local transpose on the array to get the axes in the correct order
-        trans_arr = self.view(np.ndarray).transpose(axlist_f).copy()
+    #     # Check to see if this is the current distributed axis
+    #     if self.axis == axis or self.comm is None:
+    #         return self
 
-        # Perform the global transpose
-        tmp_gshape = (self.global_shape[self.axis],) + trans_arr.shape[1:]
-        trans_arr = mpiutil.transpose_blocks(trans_arr, tmp_gshape, comm=self.comm)
+    #     # Test to see if the datatype is one understood by MPI, this can
+    #     # probably be fixed up at somepoint by creating a datatype of the right
+    #     # number of bytes
+    #     try:
+    #         mpiutil.typemap(self.dtype)
+    #     except KeyError:
+    #         if self.comm is None or self.comm.rank == 0:
+    #             import warnings
+    #             warnings.warn('Cannot redistribute array of compound datatypes. Sorry!!')
+    #         return self
 
-        axlist_b = list(range(len(self.shape)))
-        axlist_b.pop(0)
-        last = axlist_b.pop(-1)
-        if self.axis < axis:  # This has to awkwardly depend on the order of the axes
-            axlist_b.insert(self.axis, 0)
-            axlist_b.insert(axis, last)
-        else:
-            axlist_b.insert(axis, last)
-            axlist_b.insert(self.axis, 0)
+    #     # Construct the list of the axes to swap around
+    #     axlist_f = list(range(len(self.shape)))
 
-        # Perform the local transpose to get the axes back in the correct order
-        trans_arr = trans_arr.transpose(axlist_b)
+    #     # Remove the axes we are going to swap around
+    #     axlist_f.remove(self.axis)
+    #     axlist_f.remove(axis)
 
-        # Create a new MPIArray object out of the data
-        dist_arr = MPIArray(self.global_shape, axis=axis, dtype=self.dtype, comm=self.comm)
-        dist_arr[:] = trans_arr
+    #     # Move the current dist axis to the front, and the new to the end
+    #     axlist_f.insert(0, self.axis)
+    #     axlist_f.append(axis)
 
-        return dist_arr
+    #     # Perform a local transpose on the array to get the axes in the correct order
+    #     trans_arr = self.view(np.ndarray).transpose(axlist_f).copy()
+
+    #     # Perform the global transpose
+    #     tmp_gshape = (self.global_shape[self.axis],) + trans_arr.shape[1:]
+    #     trans_arr = mpiutil.transpose_blocks(trans_arr, tmp_gshape, comm=self.comm)
+
+    #     axlist_b = list(range(len(self.shape)))
+    #     axlist_b.pop(0)
+    #     last = axlist_b.pop(-1)
+    #     if self.axis < axis:  # This has to awkwardly depend on the order of the axes
+    #         axlist_b.insert(self.axis, 0)
+    #         axlist_b.insert(axis, last)
+    #     else:
+    #         axlist_b.insert(axis, last)
+    #         axlist_b.insert(self.axis, 0)
+
+    #     # Perform the local transpose to get the axes back in the correct order
+    #     trans_arr = trans_arr.transpose(axlist_b)
+
+    #     # Create a new MPIArray object out of the data
+    #     dist_arr = MPIArray(self.global_shape, axis=axis, dtype=self.dtype, comm=self.comm)
+    #     dist_arr[:] = trans_arr
+
+    #     return dist_arr
 
     def enumerate(self, axis):
         """Helper for enumerating over a given axis.
