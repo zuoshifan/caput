@@ -721,7 +721,7 @@ def alloc(a, b):
     return A, sD, rD
 
 
-def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, chunk_size=16.0, verbose=False, comm=_comm):
+def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, copy=False, chunk_size=16.0, verbose=False, comm=_comm):
     """Redistribute an array that is distributed on processes.
 
     Parameters
@@ -737,7 +737,13 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
         Length in each process when distributed on `new_axis`. When None (the
         default), will automatically calculate the lengths to make each process
         has allmost the same length (smaller ranks may have one more than larger
-        ranks).
+        ranks). When the sum of `new_axis_lens` is smaller than the original
+        length of `new_aixs`, data will be truncated, else elements beyond the
+        original array will be filled with `fill_value`.
+    fill_value : data type of local_array
+        When the sum of `new_axis_lens` is greater than the original length of
+        `new_aixs`, elements beyond the original array will be filled with
+        `fill_value`.
     copy : bool, optimal
         If no need to redistribute, return a copy of `local_array` when True,
         or just return `local_array` itself when False. Default False.
@@ -795,8 +801,14 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
     if new_axis_lens is None:
         new_axis_lens, new_axis_starts, _ = split_all(global_shape[new_axis], comm=comm)
     else:
-        if len(new_axis_lens) != comm.size and sum(new_axis_lens) != global_shape[new_axis]:
-            raise RuntimeError('new_axis_lens are incompatible to the global array')
+        # if len(new_axis_lens) != comm.size and sum(new_axis_lens) != global_shape[new_axis]:
+        #     raise RuntimeError('new_axis_lens are incompatible to the global array')
+        if not (np.asarray(new_axis_lens) >= 0).all():
+            raise ValueError('new_axis_lens can not be negative')
+        if len(new_axis_lens) > comm.size:
+            new_axis_lens = new_axis_lens[:comm.size]
+        elif len(new_axis_lens) < comm.size:
+            new_axis_lens = list(new_axis_lens) + [0] * (comm.size - len(new_axis_lens))
         new_axis_starts = np.cumsum(np.insert(new_axis_lens, 0, 0))[:-1]
 
     if axis == new_axis and np.array_equal(local_axis_lens, new_axis_lens):
@@ -812,16 +824,19 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
     # pre-allocate new local_array
     new_local_shape = list(global_shape)
     new_local_shape[new_axis] = new_axis_lens[comm.rank]
-    new_local_array = np.empty(new_local_shape, dtype=local_dtype)
+    if np.sum(new_axis_lens) <= global_shape[new_axis]:
+        new_local_array = np.empty(new_local_shape, dtype=local_dtype)
+    else:
+        new_local_array = np.full(new_local_shape, fill_value, dtype=local_dtype)
 
     # calculate how many iterations to communicate data according to chunk_size
     item_size = local_array.itemsize
     global_size = 1.0 * np.prod(global_shape) * item_size / 2**30 # in GB
     if global_size <= chunk_size:
         base_size = global_size
-        num_base = global_shape[axis]
+        num_base = 1
         num_iter = 1
-        iter_nums = [num_base]
+        iter_nums = [global_shape[axis]]
     else:
         base_shape = list(global_shape)
         base_shape[axis] = 1
@@ -841,11 +856,12 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
     if verbose and comm.rank == 0:
         print 'Split into %d chunks, each with %f GB...' % (num_iter, base_size * num_base)
 
-    def f(rq):
-        """Function to return `rq` but maybe with information about completion."""
-        if verbose and comm.rank == 0:
-            print 'Complete chunk %d of %d...' % (rq[0], num_iter)
-        return rq
+    def test(rq):
+        """"Return the Test result of the request `rq` maybe with information of completion."""
+        ind, test = rq[0], rq[1].Test()
+        if verbose and comm.rank == 0 and test:
+            print 'Complete chunks %d...' % ind
+        return test
 
     if axis == new_axis:
         # redistribute to the new axis
@@ -892,13 +908,13 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
             # reserve only un-complted requests
-            reqs = [ f(rq) for rq in reqs if not rq[1].Test() ]
+            reqs = [ rq for rq in reqs if not test(rq) ]
 
             # use Ialltoallw to improve performance, this needs MPI-3
             req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
             reqs.append((it, req))
 
-        reqs = [ f(rq)[1] for rq in reqs if not rq[1].Test() ]
+        reqs = [ rq[1] for rq in reqs if not test(rq) ]
         MPI.Prequest.Waitall(reqs)
 
         if verbose and comm.rank == 0:
@@ -906,7 +922,8 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
 
     else:
         # redistribute to new axis
-        A, sD, rD = alloc(local_axis_lens, iter_nums)
+        A1, sD1, rD1 = alloc(local_axis_lens, iter_nums)
+        A2, sD2, rD2 = alloc([global_shape[new_axis]], new_axis_lens)
 
         reqs = []
         for it in range(num_iter):
@@ -917,11 +934,11 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
             send_types = []
             for i in range(comm.size):
                 send_sub_shape = list(local_shape)
-                send_sub_shape[axis] = A[comm.rank, it]
-                send_sub_shape[new_axis] = new_axis_lens[i]
+                send_sub_shape[axis] = A1[comm.rank, it]
+                send_sub_shape[new_axis] = A2[:, i]
                 send_sub_starts = [0] * ndim
-                send_sub_starts[axis] = sD[comm.rank, it]
-                send_sub_starts[new_axis] = new_axis_starts[i]
+                send_sub_starts[axis] = sD1[comm.rank, it]
+                send_sub_starts[new_axis] = sD2[:, i]
                 if np.prod(send_sub_shape) == 0:
                     send_cnt[i] = 0
                     send_types.append(mpitype)
@@ -933,9 +950,11 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
             recv_types = []
             for i in range(comm.size):
                 recv_sub_shape = list(new_local_shape)
-                recv_sub_shape[axis] = A[i, it]
+                recv_sub_shape[axis] = A1[i, it]
+                recv_sub_shape[new_axis] = A2[:, comm.rank]
                 recv_sub_starts = [0] * ndim
-                recv_sub_starts[axis] = local_axis_starts[i] + sD[i, it]
+                recv_sub_starts[axis] = local_axis_starts[i] + sD1[i, it]
+                recv_sub_starts[new_axis] = rD2[comm.rank, :]
                 if np.prod(recv_sub_shape) == 0:
                     recv_cnt[i] = 0
                     recv_types.append(mpitype)
@@ -943,13 +962,13 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, copy=False, ch
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
             # reserve only un-complted requests
-            reqs = [ f(rq) for rq in reqs if not rq[1].Test() ]
+            reqs = [ rq for rq in reqs if not test(rq) ]
 
             # use Ialltoallw to improve performance, this needs MPI-3
             req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
             reqs.append((it, req))
 
-        reqs = [ f(rq)[1] for rq in reqs if not rq[1].Test() ]
+        reqs = [ rq[1] for rq in reqs if not test(rq) ]
         MPI.Prequest.Waitall(reqs)
 
         if verbose and comm.rank == 0:
