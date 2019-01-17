@@ -207,7 +207,7 @@ class _global_resolver(object):
             if slobj[self.axis] is None:
                 return None
             else:
-                return self.array[slobj].view(np.ndarray)
+                return self.array[tuple(slobj)].view(np.ndarray)
 
         else:
 
@@ -215,7 +215,7 @@ class _global_resolver(object):
             slobj = [ slice(None, None, None) if sl is None else sl for sl in slobj ]
 
             # Return an MPIArray view
-            arr = self.array[slobj]
+            arr = self.array[tuple(slobj)]
 
             # Figure out which is the distributed axis after the slicing, by
             # removing slice axes which are just ints from the mapping
@@ -229,7 +229,7 @@ class _global_resolver(object):
 
         if slobj[self.axis] is None:
             return
-        self.array[slobj] = value
+        self.array[tuple(slobj)] = value
 
 
 class MPIArray(np.ndarray):

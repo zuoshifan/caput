@@ -437,7 +437,7 @@ def gather_local(global_array, local_array, local_start, root=0, comm=_comm):
     if comm is None or comm.size == 1:
         # only one process
         slc = [slice(s, s+n) for (s, n) in zip(local_start, local_size)]
-        global_array[slc] = local_array.copy()
+        global_array[tuple(slc)] = local_array.copy()
     else:
         mpi_type = typemap(local_array.dtype)
 
@@ -574,7 +574,7 @@ def scatter_local(global_array, local_array, local_start, root=None, comm=_comm)
     if comm is None or comm.size == 1:
         # only one process
         slc = [slice(s, s+n) for (s, n) in zip(local_start, local_size)]
-        local_array[:] = global_array[slc].copy()
+        local_array[:] = global_array[tuple(slc)].copy()
     else:
         mpi_type = typemap(local_array.dtype)
 
@@ -604,7 +604,7 @@ def scatter_local(global_array, local_array, local_start, root=None, comm=_comm)
 
         if root is None:
             slc = [slice(s, s+n) for (s, n) in zip(local_start, local_size)]
-            local_array[:] = global_array[slc].copy()
+            local_array[:] = global_array[tuple(slc)].copy()
         else:
             _scatter(root)
 
