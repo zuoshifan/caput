@@ -721,7 +721,7 @@ def alloc(a, b):
     return A, sD, rD
 
 
-def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, copy=False, chunk_size=16.0, verbose=False, comm=_comm):
+def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, copy=False, chunk_size=16.0, max_requests=4, verbose=False, comm=_comm):
     """Redistribute an array that is distributed on processes.
 
     Parameters
@@ -747,8 +747,11 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
     copy : bool, optimal
         If no need to redistribute, return a copy of `local_array` when True,
         or just return `local_array` itself when False. Default False.
-    chunk_size: float
+    chunk_size: float, optional
         Communicate less or equal than this amount of data (in GB) each time.
+    max_requests: int, optional
+        Maximum number of pending data comminucation requests to avoid network
+        blocking by too many of data.
     verbose : bool, optimal
         Whether output some additional information during the executing.
     comm : MPI communicator, optimal
@@ -872,8 +875,6 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
         scnt = np.zeros_like(A1[:, 0:1]) # already sent counts of each process as a column vector
         rcnt = np.zeros_like(A2[:, 0:1]) # already received counts of each process as a column vector
         for it in range(num_iter):
-            if verbose and comm.rank == 0:
-                print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
             A, sD, rD = alloc(A1[:, it], A2[:, it])
             sD += scnt # send displacement plus already sent counts
             rD += rcnt # receive displacement plus already received counts
@@ -908,7 +909,16 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
             # reserve only un-complted requests
-            reqs = [ rq for rq in reqs if not test(rq) ]
+            # reqs = [ rq for rq in reqs if not test(rq) ]
+            # if len(reqs) > max_requests:
+            #     MPI.Prequest.Waitany([ rq[1] for rq in reqs if not (test(rq)) ])
+            while True:
+                reqs = [ rq for rq in reqs if not test(rq) ]
+                if len(reqs) <= max_requests:
+                    break
+
+            if verbose and comm.rank == 0:
+                print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
 
             # use Ialltoallw to improve performance, this needs MPI-3
             req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
@@ -927,8 +937,6 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
 
         reqs = []
         for it in range(num_iter):
-            if verbose and comm.rank == 0:
-                print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
             send_cnt = [1] * comm.size
             send_dpl = [0] * comm.size
             send_types = []
@@ -962,7 +970,16 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
             # reserve only un-complted requests
-            reqs = [ rq for rq in reqs if not test(rq) ]
+            # reqs = [ rq for rq in reqs if not test(rq) ]
+            # if len(reqs) > max_requests:
+            #     MPI.Prequest.Waitany([ rq[1] for rq in reqs if not (test(rq)) ])
+            while True:
+                reqs = [ rq for rq in reqs if not test(rq) ]
+                if len(reqs) <= max_requests:
+                    break
+
+            if verbose and comm.rank == 0:
+                print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
 
             # use Ialltoallw to improve performance, this needs MPI-3
             req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
