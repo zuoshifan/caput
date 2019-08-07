@@ -721,7 +721,7 @@ def alloc(a, b):
     return A, sD, rD
 
 
-def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, copy=False, chunk_size=16.0, max_requests=4, verbose=False, comm=_comm):
+def redistribute(local_array, axis, new_axis, via_file=False, new_axis_lens=None, fill_value=0, copy=False, chunk_size=16.0, max_requests=4, verbose=False, comm=_comm):
     """Redistribute an array that is distributed on processes.
 
     Parameters
@@ -733,6 +733,9 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
     new_axis : int
         The new axis the global array will be distributed on. Can be negative,
         can be the same as `axis`, too.
+    via_file : bool, optional
+        Redistribute the array by first write it to file and then re-read the
+        data from the file.
     new_axis_lens : None or 1D array, optimal
         Length in each process when distributed on `new_axis`. When None (the
         default), will automatically calculate the lengths to make each process
@@ -782,12 +785,12 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
     # check shapes and dtypes of local_array
     global_shapes = set(comm.allgather(global_shape))
     if len(global_shapes) != 1:
-        raise RuntimeError('Local array shape is incompatible to gather')
+        raise RuntimeError('Local array shape is incompatible to redistribute')
     else:
         global_shape = list(global_shapes)[0]
     local_dtypes = set(comm.allgather(local_dtype))
     if len(local_dtypes) != 1:
-        raise RuntimeError('Local array dtype is incompatible to gather')
+        raise RuntimeError('Local array dtype is incompatible to redistribute')
     else:
         local_dtype = list(local_dtypes)[0]
 
@@ -832,6 +835,64 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
     else:
         new_local_array = np.full(new_local_shape, fill_value, dtype=local_dtype)
 
+    if via_file:
+        if np.sum(new_axis_lens) != global_shape[new_axis]:
+            raise RuntimeError('Currently not support different array shape redistribute via file')
+
+        if rank == 0:
+            print 'Start redistribute data via file...'
+
+        temp_file = '.temp_redistribute.txt'
+
+        item_size = local_array.itemsize
+        local_write_size = 1.0 * np.prod(local_shape) * item_size / 2**30 # in GB
+        local_read_size = 1.0 * np.prod(new_local_shape) * item_size / 2**30 # in GB
+        if local_write_size >= 2.0:
+            warnings.warn("Warning: rank %d will write %.2f GB data to %s" % (rank, local_write_size, temp_file))
+        if local_read_size >= 2.0:
+            warnings.warn("Warning: rank %d will read %.2f GB data from %s" % (rank, local_read_size, temp_file))
+
+        # open the file for read and write
+        fh = MPI.File.Open(comm, temp_file, amode= MPI.MODE_CREATE | MPI.MODE_RDWR)
+        # the etype
+        etype = mpitype
+        # construct filetype for write
+        if np.prod(local_shape) == 0:
+            filetype = etype
+        else:
+            local_start = [0] * ndim
+            local_start[axis] = local_axis_starts[rank]
+            filetype = MPI.INT.Create_subarray(global_shape, local_shape, local_start)
+            filetype.Commit()
+        # set the file view
+        fh.Set_view(0, etype, filetype)
+        # collectively write the data to file
+        fh.Write_all(np.ascontiguousarray(local_array))
+
+        # construct filetype for read
+        if np.prod(new_local_shape) == 0:
+            filetype = etype
+        else:
+            new_local_start = [0] * ndim
+            new_local_start[new_axis] = new_axis_starts[rank]
+            filetype = MPI.INT.Create_subarray(global_shape, new_local_shape, new_local_start)
+            filetype.Commit()
+        # reset file view
+        fh.Set_view(0, etype, filetype)
+        # collectively read the data from file
+        fh.Read_all(new_local_array)
+
+        # close the file
+        fh.Close()
+
+        if rank == 0:
+            import os
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        barrier(comm)
+        return new_local_array
+
+
     # calculate how many iterations to communicate data according to chunk_size
     item_size = local_array.itemsize
     global_size = 1.0 * np.prod(global_shape) * item_size / 2**30 # in GB
@@ -859,19 +920,11 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
     if verbose and comm.rank == 0:
         print 'Split into %d chunks, each with %f GB...' % (num_iter, base_size * num_base)
 
-    def test(rq):
-        """"Return the Test result of the request `rq` maybe with information of completion."""
-        ind, test = rq[0], rq[1].Test()
-        if verbose and comm.rank == 0 and test:
-            print 'Complete chunks %d...' % ind
-        return test
-
     if axis == new_axis:
         # redistribute to the new axis
         A1, _, _ = alloc(local_axis_lens, iter_nums)
         A2, _, _ = alloc(new_axis_lens, iter_nums)
 
-        reqs = []
         scnt = np.zeros_like(A1[:, 0:1]) # already sent counts of each process as a column vector
         rcnt = np.zeros_like(A2[:, 0:1]) # already received counts of each process as a column vector
         for it in range(num_iter):
@@ -908,24 +961,13 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
                     recv_sub_starts[axis] = rD[comm.rank, i]
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
-            # reserve only un-complted requests
-            # reqs = [ rq for rq in reqs if not test(rq) ]
-            # if len(reqs) > max_requests:
-            #     MPI.Prequest.Waitany([ rq[1] for rq in reqs if not (test(rq)) ])
-            while True:
-                reqs = [ rq for rq in reqs if not test(rq) ]
-                if len(reqs) <= max_requests:
-                    break
-
             if verbose and comm.rank == 0:
                 print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
 
             # use Ialltoallw to improve performance, this needs MPI-3
-            req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
-            reqs.append((it, req))
+            req = comm.Ialltoallw([np.ascontiguousarray(local_array), send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
 
-        reqs = [ rq[1] for rq in reqs if not test(rq) ]
-        MPI.Prequest.Waitall(reqs)
+            req.Wait()
 
         if verbose and comm.rank == 0:
             print 'All chunks done!'
@@ -935,7 +977,6 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
         A1, sD1, rD1 = alloc(local_axis_lens, iter_nums)
         A2, sD2, rD2 = alloc([global_shape[new_axis]], new_axis_lens)
 
-        reqs = []
         for it in range(num_iter):
             send_cnt = [1] * comm.size
             send_dpl = [0] * comm.size
@@ -969,24 +1010,13 @@ def redistribute(local_array, axis, new_axis, new_axis_lens=None, fill_value=0, 
                 else:
                     recv_types.append(mpitype.Create_subarray(new_local_shape, recv_sub_shape, recv_sub_starts).Commit())
 
-            # reserve only un-complted requests
-            # reqs = [ rq for rq in reqs if not test(rq) ]
-            # if len(reqs) > max_requests:
-            #     MPI.Prequest.Waitany([ rq[1] for rq in reqs if not (test(rq)) ])
-            while True:
-                reqs = [ rq for rq in reqs if not test(rq) ]
-                if len(reqs) <= max_requests:
-                    break
-
             if verbose and comm.rank == 0:
                 print 'Start to redistribute chunk %d of %d...' % (it, num_iter)
 
             # use Ialltoallw to improve performance, this needs MPI-3
-            req = comm.Ialltoallw([local_array, send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
-            reqs.append((it, req))
+            req = comm.Ialltoallw([np.ascontiguousarray(local_array), send_cnt, send_dpl, send_types], [new_local_array, recv_cnt, recv_dpl, recv_types])
 
-        reqs = [ rq[1] for rq in reqs if not test(rq) ]
-        MPI.Prequest.Waitall(reqs)
+            req.Wait()
 
         if verbose and comm.rank == 0:
             print 'All chunks done!'
