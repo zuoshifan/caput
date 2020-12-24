@@ -143,7 +143,7 @@ class Reader(object):
     def __init__(self, files):
 
         # If files is a filename, or pattern, turn into list of files.
-        if isinstance(files, basestring):
+        if isinstance(files, str):
             files = sorted(glob.glob(files))
 
         data_empty = self.data_class.from_mult_files(files, datasets=())
@@ -496,7 +496,7 @@ def ensure_file_list(files):
 
     if memh5.is_group(files):
         files = [files]
-    elif isinstance(files, basestring):
+    elif isinstance(files, str):
         files = sorted(glob.glob(files))
     elif hasattr(files, '__iter__'):
         # Copy the sequence and make sure it's mutable.
@@ -525,7 +525,7 @@ def _copy_non_time_data(data, out=None, to_dataset_names=None):
 
     if out is not None:
         memh5.copyattrs(data.attrs, out.attrs)
-    for key, entry in data.iteritems():
+    for key, entry in data.items():
         if key == 'index_map':
             # XXX exclude index map.
             continue

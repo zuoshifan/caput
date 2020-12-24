@@ -1442,10 +1442,10 @@ class BasicCont(MemDiskGroup):
         super(BasicCont,self).__init__(*args, **kwargs)
         # Initialize new groups only if writable.
         if self._data.file.mode == 'r+':
-            self._data.require_group(u'history')
-            self._data.require_group(u'index_map')
+            self._data.require_group('history')
+            self._data.require_group('index_map')
             if 'order' not in self._data['history'].attrs.keys():
-                self._data['history'].attrs[u'order'] = '[]'
+                self._data['history'].attrs['order'] = '[]'
 
     @property
     def history(self):
@@ -1464,9 +1464,9 @@ class BasicCont(MemDiskGroup):
         """
 
         out = {}
-        for name, value in self._data['history'].iteritems():
+        for name, value in self._data['history'].items():
             out[name] = value.attrs
-        out[u'order'] = eval(self._data['history'].attrs['order'])
+        out['order'] = eval(self._data['history'].attrs['order'])
         return ro_dict(out)
 
     @property
@@ -1488,7 +1488,7 @@ class BasicCont(MemDiskGroup):
         """
 
         out = {}
-        for name, value in self._data['index_map'].iteritems():
+        for name, value in self._data['index_map'].items():
             out[name] = value[:]
         return ro_dict(out)
 
@@ -1528,7 +1528,7 @@ class BasicCont(MemDiskGroup):
         order = self.history['order']
         order = order + [name]
         history_group = self._data["history"]
-        history_group.attrs[u'order'] = str(order)
+        history_group.attrs['order'] = str(order)
         history_group.create_group(name)
         for key, value in history.items():
             history_group[name].attrs[key] = value
@@ -1567,7 +1567,7 @@ class BasicCont(MemDiskGroup):
                     for axis in dist_axis:
 
                         # Try processing if this is a string
-                        if isinstance(axis, basestring):
+                        if isinstance(axis, str):
                             if 'axis' in item.attrs and axis in item.attrs['axis']:
                                 axis = np.argwhere(item.attrs['axis'] == axis)[0, 0]
                             else:
@@ -1605,7 +1605,7 @@ def attrs2dict(attrs):
     """Safely copy an h5py attributes object to a dictionary."""
 
     out = {}
-    for key, value in attrs.iteritems():
+    for key, value in attrs.items():
         if isinstance(value, np.ndarray):
             value = value.copy()
         out[key] = value
@@ -1655,14 +1655,14 @@ def get_h5py_File(f, **kwargs):
         except IOError as e:
             msg = "Opening file %s caused an error: " % str(f)
             new_e = IOError(msg + str(e))
-            raise new_e.__class__, new_e, sys.exc_info()[2]
+            raise new_e.__class__(new_e).with_traceback(sys.exc_info()[2])
     return f, opened
 
 
 def copyattrs(a1, a2):
     # Make sure everything is a copy.
     a1 = attrs2dict(a1)
-    for key, value in a1.iteritems():
+    for key, value in a1.items():
         a2[key] = value
 
 
@@ -1670,7 +1670,7 @@ def deep_group_copy(g1, g2):
     """Copy full data tree from one group to another."""
 
     copyattrs(g1.attrs, g2.attrs)
-    for key, entry in g1.iteritems():
+    for key, entry in g1.items():
         if is_group(entry):
             g2.create_group(key)
             deep_group_copy(entry, g2[key])
@@ -1731,7 +1731,7 @@ def _distributed_group_to_hdf5(group, fname, hints=True, **kwargs):
     comm.Barrier()
 
     # Write out groups and distributed datasets, these operations must be done collectively
-    for key, entry in group.iteritems():
+    for key, entry in group.items():
 
         # Groups are written out by recursing
         if is_group(entry):
@@ -1750,7 +1750,7 @@ def _distributed_group_to_hdf5(group, fname, hints=True, **kwargs):
 
         with h5py.File(fname, 'r+', **kwargs_nomode) as f:
 
-            for key, entry in group.iteritems():
+            for key, entry in group.items():
 
                 # Write out common datasets and copy their attrs
                 if isinstance(entry, MemDatasetCommon):

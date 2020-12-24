@@ -311,7 +311,7 @@ See the documentation for these base classes for more details.
 
 import sys
 import inspect
-import Queue
+import queue
 import logging
 import os
 from os import path
@@ -319,7 +319,7 @@ import warnings
 
 import yaml
 
-import config
+from . import config
 
 
 # Set the module logger.
@@ -452,7 +452,7 @@ class Manager(config.Reader):
                 msg += str(e)
                 new_e = PipelineConfigError(msg)
                 # This preserves the traceback.
-                raise new_e.__class__, new_e, sys.exc_info()[2]
+                raise new_e.__class__(new_e).with_traceback(sys.exc_info()[2])
             pipeline_tasks.append(task)
             logger.debug("Added %s to task list." % task.__class__.__name__)
         # Run the pipeline.
@@ -734,7 +734,7 @@ class TaskBase(config.Reader):
         self._requires_keys = requires
         self._requires = [None] * n_requires
         self._in_keys = in_
-        self._in = [Queue.Queue() for i in range(n_in)]
+        self._in = [queue.Queue() for i in range(n_in)]
         self._out_keys = out
 
     def _pipeline_advance_state(self):
@@ -760,7 +760,7 @@ class TaskBase(config.Reader):
             for in_, in_key in zip(self._in, self._in_keys):
                 if not in_.empty():
                     # XXX Clean up.
-                    print "Something left: %i" % in_.qsize()
+                    print("Something left: %i" % in_.qsize())
 
                     msg = "Task finished %s iterating `next()` but input queue \'%s\' isn't empty." % (self.__class__.__name__, in_key)
                     warnings.warn(msg)
@@ -1296,7 +1296,7 @@ def _format_product_keys(spec, name):
         out_prod = (out_prod,)
     # Check that all the keys provided are strings.
     for prod in out_prod:
-        if not isinstance(prod, basestring):
+        if not isinstance(prod, str):
             msg = "Data product keys must be strings."
             raise PipelineConfigError(msg)
     return out_prod

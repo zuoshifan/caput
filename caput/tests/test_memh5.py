@@ -16,7 +16,7 @@ class TestRODict(unittest.TestCase):
         a = {'a' : 5}
         a = memh5.ro_dict(a)
         self.assertEqual(a['a'], 5)
-        self.assertEqual(a.keys(), ['a'])
+        self.assertEqual(list(a.keys()), ['a'])
         # Convoluded test to make sure you can't write to it.
         try: a['b'] = 6
         except TypeError: correct = True
@@ -59,7 +59,7 @@ class TestGroup(unittest.TestCase):
         self.assertTrue(memh5.is_group(g['a']))
         self.assertTrue(np.all(g['a/ra'][:] == data))
         g['a'].create_dataset('/ra', data=data)
-        print g.keys()
+        print(g.keys())
         self.assertTrue(np.all(g['ra'][:] == data))
 
 
@@ -69,7 +69,7 @@ class TestH5Files(unittest.TestCase):
     fname = 'tmp_test_memh5.h5'
 
     def setUp(self):
-        with h5py.File(self.fname) as f:
+        with h5py.File(self.fname, 'w') as f:
             l1 = f.create_group('level1')
             l2 = l1.create_group('level2')
             d1 = l1.create_dataset('large', data=np.arange(100))
@@ -100,7 +100,7 @@ class TestH5Files(unittest.TestCase):
                 self.assertEqual(this_a, this_b)
 
     def test_h5_sanity(self):
-        f = h5py.File(self.fname)
+        f = h5py.File(self.fname, 'r')
         self.assertGroupsEqual(f, f)
         f.close()
 

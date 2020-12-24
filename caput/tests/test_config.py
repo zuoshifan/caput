@@ -60,3 +60,6 @@ class TestConfig(unittest.TestCase):
         self.assertEqual(person2.name, 'Richard')
         self.assertEqual(person2.age, 40.0)
         self.assertEqual(person2.petname, 'Sooty')   
+
+if __name__ == '__main__':
+    unittest.main()

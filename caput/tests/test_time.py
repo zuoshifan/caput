@@ -17,7 +17,7 @@ class TestUT2RATransit(unittest.TestCase):
         from skyfield import earthlib
 
         # At the J2000 epoch, sidereal time and transit RA should be the same.
-        epoch = datetime(2000, 1, 01, 11, 58, 56)
+        epoch = datetime(2000, 1, 1, 11, 58, 56)
 
         # Create an observer at an arbitrary location
         obs = ctime.Observer(118.3, 36.1)
@@ -40,7 +40,7 @@ class TestUT2RATransit(unittest.TestCase):
 
         from skyfield import earthlib
 
-        epoch = datetime(2000, 1, 01, 11, 58, 56)
+        epoch = datetime(2000, 1, 1, 11, 58, 56)
 
         # Create an observer at an arbitrary location
         obs = ctime.Observer(118.3, 36.1)
@@ -197,13 +197,13 @@ class TestLSD(unittest.TestCase):
 class TestTime(unittest.TestCase):
 
     def test_datetime_to_string(self):
-        dt = datetime(2014, 04, 21, 16, 33, 12, 12356)
+        dt = datetime(2014, 4, 21, 16, 33, 12, 12356)
         fdt = ctime.datetime_to_timestr(dt)
         self.assertEqual(fdt, "20140421T163312Z")
 
     def test_string_to_datetime(self):
         dt = ctime.timestr_to_datetime("20140421T163312Z_stone")
-        ans = datetime(2014, 04, 21, 16, 33, 12)
+        ans = datetime(2014, 4, 21, 16, 33, 12)
         self.assertEqual(dt, ans)
 
     def test_from_unix_time(self):
@@ -250,7 +250,7 @@ class TestTime(unittest.TestCase):
     def test_leap_seconds(self):
         # 'test_' removed from name to deactivate the test untill this can be
         # implemented.
-        l_second_date = datetime(2009, 01, 01, 00, 00, 00)
+        l_second_date = datetime(2009, 1, 1, 00, 00, 00)
         l_second_date = ctime.datetime_to_unix(l_second_date)
         before = l_second_date - 10000
         after = l_second_date + 10000
@@ -259,7 +259,7 @@ class TestTime(unittest.TestCase):
         self.assertEqual(ctime.leap_seconds_between(after, after_after), 0)
 
         # Check that a period including an extra leap seconds has two increments
-        l_second2_date = ctime.datetime_to_unix(datetime(2012, 07, 1, 0, 0, 0))
+        l_second2_date = ctime.datetime_to_unix(datetime(2012, 7, 1, 0, 0, 0))
         after2 = l_second2_date + 10000
 
         self.assertEqual(ctime.leap_seconds_between(before, after2), 2)

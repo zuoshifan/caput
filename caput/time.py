@@ -649,7 +649,7 @@ def ensure_unix(time):
 
     if isinstance(time0, datetime):
         return datetime_to_unix(time)
-    elif isinstance(time0, basestring):
+    elif isinstance(time0, str):
         return datetime_to_unix(timestr_to_datetime(time))
     else:
 

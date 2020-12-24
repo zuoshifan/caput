@@ -67,7 +67,7 @@ try:
     size = _comm.Get_size()
 
     if _comm is not None and size > 1:
-        print "Starting MPI rank=%i [size=%i]" % (rank, size)
+        print("Starting MPI rank=%i [size=%i]" % (rank, size))
 
     rank0 = True if rank == 0 else False
 
@@ -337,7 +337,7 @@ def split_m(n, m):
     :fun:`split_all`, :fun:`split_local`
 
     """
-    base = (n / m)
+    base = (n // m)
     rem = n % m
 
     part = base * np.ones(m, dtype=np.int) + (np.arange(m) < rem).astype(np.int)
@@ -760,7 +760,7 @@ def transpose_blocks(row_array, shape, comm=_comm):
         #    print comm.rank, ir, ic, sar[ir], ear[ir], sac[ic], eac[ic], shape
 
         if stat.error != MPI.SUCCESS:
-            print "**** ERROR in MPI SEND (r: %i c: %i rank: %i) *****" % (ir, ic, comm.rank)
+            print("**** ERROR in MPI SEND (r: %i c: %i rank: %i) *****" % (ir, ic, comm.rank))
 
 
     #print "rank %i: Done waiting on MPI SEND" % comm.rank
@@ -779,7 +779,7 @@ def transpose_blocks(row_array, shape, comm=_comm):
         #shape, recv_buffer[sar[ir]:ear[ir]].shape, recv_buffer.dtype, row_array.dtype
 
         if stat.error != MPI.SUCCESS:
-            print "**** ERROR in MPI RECV (r: %i c: %i rank: %i) *****" % (ir, ir, comm.rank)
+            print("**** ERROR in MPI RECV (r: %i c: %i rank: %i) *****" % (ir, ir, comm.rank))
 
     return recv_buffer.reshape(shape[:-1] + (pc,))
 
