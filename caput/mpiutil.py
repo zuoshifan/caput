@@ -135,7 +135,7 @@ def partition_list(full_list, i, n, method='con'):
     def _partition(N, n, i):
         ### If partiion `N` numbers into `n` pieces,
         ### return the start and stop of the `i`th piece
-        base = (N / n)
+        base = (N // n)
         rem = N % n
         num_lst = rem * [base+1] + (n - rem) * [base]
         cum_num_lst = np.cumsum([0] + num_lst)
@@ -287,7 +287,7 @@ def parallel_map(func, glist, root=None, method='con', comm=_comm):
         # barrier(comm=comm)
 
         # Zip to remove indices and extract the return values into a list
-        return list(zip(*sortlist)[1])
+        return list(list(zip(*sortlist))[1])
     else:
         return None
 
