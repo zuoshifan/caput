@@ -61,10 +61,13 @@ Utility Functions
 
 """
 
+import os
 import sys
+import time
 import collections
 import warnings
 import posixpath
+import gc
 
 import numpy as np
 import h5py
@@ -502,7 +505,7 @@ class MemGroup(_BaseGroup):
 
 
     def create_dataset(self, name, shape=None, dtype=None, data=None,
-                       distributed=False, distributed_axis=None, **kwargs):
+                       distributed=False, distributed_axis=None, memmap_path=None, **kwargs):
         """Create a new dataset.
 
         Parameters
@@ -592,10 +595,10 @@ class MemGroup(_BaseGroup):
                     data = data.redistribute(axis=distributed_axis)
 
                 # Create distributed dataset
-                new_dataset = MemDatasetDistributed.from_mpi_array(data)
+                new_dataset = MemDatasetDistributed.from_mpi_array(data, memmap_path=memmap_path)
             else:
                 # Create common dataset
-                new_dataset = MemDatasetCommon.from_numpy_array(data)
+                new_dataset = MemDatasetCommon.from_numpy_array(data, memmap_path=memmap_path)
 
         # Otherwise create an empty array and copy into it (if needed)
         else:
@@ -608,9 +611,9 @@ class MemGroup(_BaseGroup):
 
                 new_dataset = MemDatasetDistributed(shape=shape, dtype=dtype,
                                                     axis=distributed_axis,
-                                                    comm=self.comm)
+                                                    comm=self.comm, memmap_path=memmap_path)
             else:
-                new_dataset = MemDatasetCommon(shape=shape, dtype=dtype)
+                new_dataset = MemDatasetCommon(shape=shape, dtype=dtype, memmap_path=memmap_path)
 
             if data is not None:
                 new_dataset[:] = data[:]
@@ -653,8 +656,9 @@ class MemGroup(_BaseGroup):
         md = mpiarray.MPIArray.from_numpy_array(dset[:], axis=distributed_axis, root=None, comm=self.comm)
         attr_dict = {} # temporarily save attrs of this dataset
         copyattrs(dset.attrs, attr_dict)
+        memmap_path = dset._memmap_path
         del dset
-        new_dset = self.create_dataset(name, shape=md.shape, dtype=md.dtype, data=md, distributed=True, distributed_axis=distributed_axis)
+        new_dset = self.create_dataset(name, shape=md.shape, dtype=md.dtype, data=md, distributed=True, distributed_axis=distributed_axis, memmap_path=memmap_path)
         copyattrs(attr_dict, new_dset.attrs)
 
         return new_dset
@@ -682,8 +686,9 @@ class MemGroup(_BaseGroup):
         global_array = dset.data.to_numpy_array(root=None)
         attr_dict = {} # temporarily save attrs of this dataset
         copyattrs(dset.attrs, attr_dict)
+        memmap_path = dset._memmap_path
         del dset
-        new_dset = self.create_dataset(name, data=global_array)
+        new_dset = self.create_dataset(name, data=global_array, memmap_path=memmap_path)
         copyattrs(attr_dict, new_dset.attrs)
 
         return new_dset
@@ -705,9 +710,17 @@ class MemDataset(_MemObjMixin):
 
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, memmap_path=None, **kwargs):
         super(MemDataset, self).__init__(**kwargs)
+        self._memmap_path = memmap_path
+        # self._memmap_file = None if memmap_path is None else f'{memmap_path}/{self.name}.dat' # self.name may not set at __init__
+        self._on_disk = False
         self._attrs = MemAttrs()
+
+    @property
+    def _memmap_file(self):
+        # self.name may not set at __init__
+        return None if self._memmap_path is None else f'{self._memmap_path}/{self.name}.dat'
 
     @property
     def attrs(self):
@@ -743,6 +756,19 @@ class MemDataset(_MemObjMixin):
     def __len__(self):
         raise NotImplementedError("Not implmemented in base class.")
 
+    @property
+    def in_memory(self):
+        return not self._on_disk
+
+    @property
+    def on_disk(self):
+        return self._on_disk
+
+    def to_disk(self):
+        raise NotImplementedError("Not implmemented in base class.")
+
+    def to_memory(self):
+        raise NotImplementedError("Not implmemented in base class.")
 
 class MemDatasetCommon(MemDataset):
     """In memory implementation of :class:`h5py.Dataset`.
@@ -776,13 +802,20 @@ class MemDatasetCommon(MemDataset):
 
     """
 
-    def __init__(self, shape, dtype):
-        super(MemDatasetCommon, self).__init__()
+    def __init__(self, shape, dtype, memmap_path=None):
+        super(MemDatasetCommon, self).__init__(memmap_path=memmap_path)
 
         self._data = np.zeros(shape, dtype)
+        self._comm = None
+        self._distributed_axis = None
+        self._dtype = self._data.dtype
+        self._shape = self._data.shape
+        self._global_shape = self._data.shape
+        self._local_shape = self._data.shape
+        self._local_offset = tuple([0] * len(self.shape))
 
     @classmethod
-    def from_numpy_array(cls, data):
+    def from_numpy_array(cls, data, memmap_path=None):
         """Initialise from a numpy array.
 
         Parameters
@@ -800,14 +833,21 @@ class MemDatasetCommon(MemDataset):
             raise TypeError("Object must be a numpy array (or subclass).")
 
         dset = cls.__new__(cls)
-        super(MemDatasetCommon, dset).__init__()
+        super(MemDatasetCommon, dset).__init__(memmap_path=memmap_path)
 
         dset._data = data
+        dset._comm = None
+        dset._distributed_axis = None
+        dset._dtype = dset._data.dtype
+        dset._shape = dset._data.shape
+        dset._global_shape = dset._data.shape
+        dset._local_shape = dset._data.shape
+        dset._local_offset = tuple([0] * len(dset.shape))
         return dset
 
     @property
     def comm(self):
-        return None
+        return self._comm
 
     @property
     def common(self):
@@ -819,7 +859,7 @@ class MemDatasetCommon(MemDataset):
 
     @property
     def distributed_axis(self):
-        return None
+        return self._distributed_axis
 
     @property
     def data(self):
@@ -831,28 +871,79 @@ class MemDatasetCommon(MemDataset):
 
     @property
     def shape(self):
-        return self._data.shape
+        return self._shape
+
+    @property
+    def global_shape(self):
+        return self._global_shape
+
+    @property
+    def local_shape(self):
+        return self._local_shape
+
+    @property
+    def local_offset(self):
+        return self._local_offset
 
     @property
     def dtype(self):
-        return self._data.dtype
+        return self._dtype
 
     def __getitem__(self, obj):
-        return self._data[obj]
+        return self._data[obj] if self.in_memory else None
 
     def __setitem__(self, obj, val):
-        self._data[obj] = val
+        if self.in_memory:
+            self._data[obj] = val
+        else:
+            raise RuntimeError('Could not change data on disk, load data to memory first')
 
     def __len__(self):
-        return len(self._data)
+        return len(self._data) if self.in_memory else None
 
     def __iter__(self):
         # This needs to be implemented to stop craziness happening when doing
         # np.array(dset)
-        return self._data.__iter__()
+        return self._data.__iter__() if self.in_memory else None
 
     def __repr__(self):
         return "<memh5 common dataset %s: shape %s, type \"%s\">" % (repr(self._name), repr(self.shape), repr(self.dtype))
+
+    def to_disk(self):
+        if self.on_disk:
+            warnings.warn(f'Dataset {self.name} is already on disk {self._memmap_file}, do nothing')
+        else:
+            if self._memmap_file is None:
+                raise RuntimeError('Memmap file not set, could not save data to disk')
+            else:
+                memmap_path = os.path.dirname(self._memmap_file)
+                if not os.path.isdir(memmap_path):
+                    if mpiutil.rank0:
+                        os.makedirs(memmap_path)
+                if mpiutil.rank0:
+                    fp = np.memmap(self._memmap_file, dtype=self.dtype, mode='write', shape=self.shape)
+                    fp[:] = self._data
+                    fp.flush()
+                    del fp
+                self._data = None
+                gc.collect()
+                self._on_disk = True
+
+    def to_memory(self):
+        if self.in_memory:
+            warnings.warn(f'Dataset {self.name} is already in memory, do nothing')
+        else:
+            if self._memmap_file is not None:
+                self._data = np.empty(self.shape, self.dtype)
+                self._data[:] = np.memmap(self._memmap_file, dtype=self.dtype, mode='r', shape=self.shape)[:]
+                self._on_disk = False
+            else:
+                raise RuntimeError('Memmap file not set, could not load data to memory')
+
+    def __del__(self):
+        # remove memmap file if it exists
+        if self._memmap_file is not None and os.path.exists(self._memmap_file) and mpiutil.rank0:
+            os.remove(self._memmap_file)
 
 
 class MemDatasetDistributed(MemDataset):
@@ -891,21 +982,39 @@ class MemDatasetDistributed(MemDataset):
 
     """
 
-    def __init__(self, shape, dtype, axis=0, comm=None):
-        super(MemDatasetDistributed, self).__init__()
+    def __init__(self, shape, dtype, axis=0, comm=None, memmap_path=None):
+        super(MemDatasetDistributed, self).__init__(memmap_path=memmap_path)
 
         self._data = mpiarray.MPIArray(shape, axis=axis, comm=comm, dtype=dtype)
+        self._comm = self._data._comm
+        self._distributed_axis = self._data.axis
+        self._dtype = self._data.dtype
+        self._shape = self._data.global_shape
+        self._global_shape = self._data.global_shape
+        self._local_shape = self._data.local_shape
+        self._local_offset = self._data.local_offset
 
     @classmethod
-    def from_mpi_array(cls, data):
-        dset = cls.__new__(cls)
-        MemDataset.__init__(dset)
-
+    def from_mpi_array(cls, data, memmap_path=None):
         if not isinstance(data, mpiarray.MPIArray):
             raise TypeError("Object must be a numpy array (or subclass).")
 
+        dset = cls.__new__(cls)
+        MemDataset.__init__(dset, memmap_path=memmap_path)
+
         dset._data = data
+        dset._comm = dset._data._comm
+        dset._distributed_axis = dset._data.axis
+        dset._dtype = dset._data.dtype
+        dset._shape = dset._data.global_shape
+        dset._global_shape = dset._data.global_shape
+        dset._local_shape = dset._data.local_shape
+        dset._local_offset = dset._data.local_offset
         return dset
+
+    @property
+    def comm(self):
+        return self._comm
 
     @property
     def common(self):
@@ -916,42 +1025,38 @@ class MemDatasetDistributed(MemDataset):
         return True
 
     @property
+    def distributed_axis(self):
+        return self._distributed_axis
+
+    @property
     def data(self):
         return self._data
 
     @property
     def local_data(self):
-        return self._data.local_array
+        return self._data.local_array if self.in_memory else None
 
     @property
     def shape(self):
-        return self.global_shape
+        return self._shape
 
     @property
     def global_shape(self):
-        return self._data.global_shape
+        return self._global_shape
 
     @property
     def local_shape(self):
-        return self._data.local_shape
+        return self._local_shape
 
     @property
     def local_offset(self):
-        return self._data.local_offset
+        return self._local_offset
 
     @property
     def dtype(self):
-        return self._data.dtype
+        return self._dtype
 
-    @property
-    def distributed_axis(self):
-        return self._data.axis
-
-    @property
-    def comm(self):
-        return self._data._comm
-
-    def redistribute(self, axis):
+    def redistribute(self, axis, via_memmap=False):
         """Change the axis that the dataset is distributed over.
 
         Parameters
@@ -959,25 +1064,89 @@ class MemDatasetDistributed(MemDataset):
         axis : integer
             Axis to distribute over.
         """
-        self._data = self._data.redistribute(axis=axis)
+        if self._distributed_axis == axis or self.comm is None:
+            # nothing to do
+            return
+        if not via_memmap:
+            self._data = self._data.redistribute(axis=axis)
+            self._distributed_axis = self._data.axis
+            self._local_shape = self._data.local_shape
+            self._local_offset = self._data.local_offset
+        else:
+            self.to_disk()
+            # self.to_memory()
+            self._data = mpiarray.MPIArray(self.shape, axis=axis, comm=self.comm, dtype=self.dtype)
+            sel = [ slice(o, o+s, None) for o, s in zip(self._data.local_offset, self._data.local_shape) ]
+            self._data.local_array[:] = np.memmap(self._memmap_file, dtype=self.dtype, mode='r', shape=self.shape)[tuple(sel)]
+            self._on_disk = False
+            self._distributed_axis = self._data.axis
+            self._local_shape = self._data.local_shape
+            self._local_offset = self._data.local_offset
 
     def __getitem__(self, obj):
-        return self._data.global_slice[obj]
+        return self._data.global_slice[obj] if self.in_memory else None
 
     def __setitem__(self, obj, val):
-        self._data.global_slice[obj] = val
+        if self.in_memory:
+            self._data.global_slice[obj] = val
+        else:
+            raise RuntimeError('Could not change data on disk, load data to memory first')
 
     def __iter__(self):
         # This needs to be implemented to stop craziness happening when doing
         # np.array(dset)
-        return self._data.__iter__()
+        return self._data.__iter__() if self.in_memory else None
 
     def __len__(self):
-        return len(self._data)
+        return len(self._data) if self.in_memory else None
 
     def __repr__(self):
         return ("<memh5 distributed dataset %s: global_shape %s, dist_axis %s, type \"%s\">"
                 % (repr(self._name), repr(self.global_shape), repr(self.distributed_axis), repr(self.dtype)))
+
+    def to_disk(self):
+        if self.on_disk:
+            warnings.warn(f'Dataset {self.name} is already on disk {self._memmap_file}, do nothing')
+        else:
+            if self._memmap_file is None:
+                raise RuntimeError('Memmap file not set, could not save data to disk')
+            else:
+                for r in range(mpiutil.size):
+                    if r == mpiutil.rank:
+                        if r == 0:
+                            memmap_path = os.path.dirname(self._memmap_file)
+                            if not os.path.isdir(memmap_path):
+                                os.makedirs(memmap_path)
+                            fp = np.memmap(self._memmap_file, dtype=self.dtype, mode='write', shape=self.shape)
+                        else:
+                            fp = np.memmap(self._memmap_file, dtype=self.dtype, mode='r+', shape=self.shape)
+                        sel = [ slice(o, o+s, None) for o, s in zip(self.local_offset, self.local_shape) ]
+                        fp[tuple(sel)] = self.local_data
+                        fp.flush()
+                    mpiutil.barrier()
+                del fp
+                self._data = None
+                gc.collect()
+                self._on_disk = True
+
+    def to_memory(self):
+        if self.in_memory:
+            warnings.warn(f'Dataset {self.name} is already in memory, do nothing')
+        else:
+            if self._memmap_file is not None:
+                self._data = mpiarray.MPIArray(self.shape, axis=self.distributed_axis, comm=self.comm, dtype=self.dtype)
+                sel = [ slice(o, o+s, None) for o, s in zip(self.local_offset, self.local_shape) ]
+                self._data.local_array[:] = np.memmap(self._memmap_file, dtype=self.dtype, mode='r', shape=self.shape)[tuple(sel)]
+                self._on_disk = False
+            else:
+                raise RuntimeError('Memmap file not set, could not load data to memory')
+
+    def __del__(self):
+        # remove memmap file if it exists
+        if self._memmap_file is not None and os.path.exists(self._memmap_file):
+            if mpiutil.rank == 0:
+                os.remove(self._memmap_file)
+
 
 
 # Higher Level Data Containers
