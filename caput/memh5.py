@@ -505,7 +505,7 @@ class MemGroup(_BaseGroup):
 
 
     def create_dataset(self, name, shape=None, dtype=None, data=None,
-                       distributed=False, distributed_axis=None, memmap_path=None, **kwargs):
+                       distributed=False, distributed_axis=None, memmap=False, memmap_path=None, **kwargs):
         """Create a new dataset.
 
         Parameters
@@ -595,7 +595,10 @@ class MemGroup(_BaseGroup):
                     data = data.redistribute(axis=distributed_axis)
 
                 # Create distributed dataset
-                new_dataset = MemDatasetDistributed.from_mpi_array(data, memmap_path=memmap_path)
+                if memmap:
+                    new_dataset = MemmapDataset.from_mpi_array(data, memmap_path=memmap_path, name=posixpath.join(parent_name, name))
+                else:
+                    new_dataset = MemDatasetDistributed.from_mpi_array(data, memmap_path=memmap_path)
             else:
                 # Create common dataset
                 new_dataset = MemDatasetCommon.from_numpy_array(data, memmap_path=memmap_path)
@@ -609,9 +612,10 @@ class MemGroup(_BaseGroup):
                 if distributed_axis is None:
                     raise RuntimeError('Distributed axis must be specified when creating dataset.')
 
-                new_dataset = MemDatasetDistributed(shape=shape, dtype=dtype,
-                                                    axis=distributed_axis,
-                                                    comm=self.comm, memmap_path=memmap_path)
+                if memmap:
+                    new_dataset = MemmapDataset(shape=shape, dtype=dtype, axis=distributed_axis, comm=self.comm, memmap_path=memmap_path, name=posixpath.join(parent_name, name))
+                else:
+                    new_dataset = MemDatasetDistributed(shape=shape, dtype=dtype, axis=distributed_axis, comm=self.comm, memmap_path=memmap_path)
             else:
                 new_dataset = MemDatasetCommon(shape=shape, dtype=dtype, memmap_path=memmap_path)
 
@@ -1147,6 +1151,216 @@ class MemDatasetDistributed(MemDataset):
             if mpiutil.rank == 0:
                 os.remove(self._memmap_file)
 
+class MemmapDataset(MemDataset):
+    """Numpy memmap implementation of :class:`h5py.Dataset`.
+
+    Inherits from :class:`MemDataset`. Encapsulates an :class:`MPIArray` mocked
+    up to look like an `h5py` dataset.  Similar to h5py datasets, this
+    implements slicing like a numpy array but as it is not actually a many
+    operations won't work (e.g. ufuncs).
+
+    Parameters
+    ----------
+    shape : tuple
+        Shape of array to initialise. This is the *global* shape.
+    dtype : numpy dtype
+        Type of array to create.
+    axis : int, optional
+        Index of axis to distribute the array over.
+    comm : MPI.Comm, optional
+        MPI communicator to distribute over. If :obj:`None` use
+        :obj:`MPI.COMM_WORLD`.
+
+    Attributes
+    ----------
+    comm
+    common
+    distributed
+    distributed_axis
+    data
+    local_data
+    shape
+    global_shape
+    local_shape
+    local_offset
+    dtype
+
+    """
+
+    def __init__(self, shape, dtype, axis=0, comm=None, memmap_path=None, name=None):
+        if memmap_path is None:
+            raise RuntimeError('Could not initialize a MemmapDataset without a memmap_path')
+        super(MemmapDataset, self).__init__(memmap_path=memmap_path, name=name)
+
+        # self._data = mpiarray.MPIArray(shape, axis=axis, comm=comm, dtype=dtype)
+        self._comm = comm or mpiutil.world
+        self._distributed_axis = axis
+        self._dtype = dtype
+        self._shape = shape
+        self._global_shape = shape
+
+        # Determine local section of distributed axis
+        local_num, local_start, local_end = mpiutil.split_local(shape[axis], comm=self._comm)
+        # Figure out the local shape and offset
+        local_shape = list(shape)
+        local_shape[axis] = local_num
+        local_offset = [0] * len(shape)
+        local_offset[axis] = local_start
+
+        self._local_shape = tuple(local_shape)
+        self._local_offset = tuple(local_offset)
+
+        if mpiutil.rank0:
+            memmap_path = os.path.dirname(self._memmap_file)
+            if not os.path.isdir(memmap_path):
+                os.makedirs(memmap_path)
+            np.memmap(self._memmap_file, dtype=dtype, mode='write', shape=shape)
+        mpiutil.barrier()
+        # sel = [ slice(o, o+s, None) for o, s in zip(self._local_offset, self._local_shape) ]
+        self._data = np.memmap(self._memmap_file, dtype=dtype, mode='r+', shape=shape)#[tuple(sel)]
+        self._on_disk = True
+
+    @classmethod
+    def from_mpi_array(cls, data, memmap_path=None, name=None):
+        if not isinstance(data, mpiarray.MPIArray):
+            raise TypeError("Object must be a MPIArray.")
+        if memmap_path is None:
+            raise RuntimeError('Could not initialize a MemmapDataset without a memmap_path')
+
+        dset = cls.__new__(cls)
+        MemDataset.__init__(dset, memmap_path=memmap_path, name=name)
+
+        # dset._data = data
+        dset._comm = data.comm
+        dset._distributed_axis = data.axis
+        dset._dtype = data.dtype
+        dset._shape = data.global_shape
+        dset._global_shape = data.global_shape
+        dset._local_shape = data.local_shape
+        dset._local_offset = data.local_offset
+
+        if mpiutil.rank0:
+            memmap_path = os.path.dirname(dset._memmap_file)
+            if not os.path.isdir(memmap_path):
+                os.makedirs(memmap_path)
+            np.memmap(dset._memmap_file, dtype=dset._dtype, mode='write', shape=dset._shape)
+        mpiutil.barrier()
+        sel = [ slice(o, o+s, None) for o, s in zip(dset._local_offset, dset._local_shape) ]
+        dset._data = np.memmap(dset._memmap_file, dtype=dset._dtype, mode='r+', shape=dset._shape)#[tuple(sel)]
+        for r in range(mpiutil.size):
+            if r == mpiutil.rank:
+                dset._data[tuple(sel)] = data.local_array
+                dset._data.flush()
+            mpiutil.barrier()
+        dset._on_disk = True
+
+        return dset
+
+    @property
+    def comm(self):
+        return self._comm
+
+    @property
+    def common(self):
+        return False
+
+    @property
+    def distributed(self):
+        return True
+
+    @property
+    def distributed_axis(self):
+        return self._distributed_axis
+
+    @property
+    def data(self):
+        return self._data
+
+    @property
+    def local_data(self):
+        sel = [ slice(o, o+s, None) for o, s in zip(self._local_offset, self._local_shape) ]
+        return self._data[tuple(sel)]
+
+    @property
+    def shape(self):
+        return self._shape
+
+    @property
+    def global_shape(self):
+        return self._global_shape
+
+    @property
+    def local_shape(self):
+        return self._local_shape
+
+    @property
+    def local_offset(self):
+        return self._local_offset
+
+    @property
+    def dtype(self):
+        return self._dtype
+
+    def redistribute(self, axis, via_memmap=False):
+        """Change the axis that the dataset is distributed over.
+
+        Parameters
+        ----------
+        axis : integer
+            Axis to distribute over.
+        """
+        if self._distributed_axis == axis or self.comm is None:
+            # nothing to do
+            return
+
+        # Determine local section of distributed axis
+        local_num, local_start, local_end = mpiutil.split_local(self.shape[axis], comm=self.comm)
+        # Figure out the local shape and offset
+        local_shape = list(self.shape)
+        local_shape[axis] = local_num
+        local_offset = [0] * len(self.shape)
+        local_offset[axis] = local_start
+
+        self._local_shape = tuple(local_shape)
+        self._local_offset = tuple(local_offset)
+        self._distributed_axis = axis
+
+        # sel = [ slice(o, o+s, None) for o, s in zip(self._local_offset, self._local_shape) ]
+        # self._data = np.memmap(self._memmap_file, dtype=dtype, mode='r+', shape=shape)[tuple(sel)]
+
+    def __getitem__(self, obj):
+        return self.data[obj]
+
+    def __setitem__(self, obj, val):
+        for r in range(mpiutil.size):
+            if r == mpiutil.rank:
+                self.data[obj] = val
+                self.data.flush()
+            mpiutil.barrier()
+
+    def __iter__(self):
+        # This needs to be implemented to stop craziness happening when doing
+        # np.array(dset)
+        return self._data.__iter__()
+
+    def __len__(self):
+        return len(self._data)
+
+    def __repr__(self):
+        return ("<memh5 distributed dataset %s: global_shape %s, dist_axis %s, type \"%s\">"
+                % (repr(self._name), repr(self.global_shape), repr(self.distributed_axis), repr(self.dtype)))
+
+    def to_disk(self):
+        self._data.flush()
+
+    def to_memory(self):
+        raise RuntimeError('MemmapDataset\'s data is on disk, could not load it to memory')
+
+    def __del__(self):
+        # remove memmap file if it exists
+        if self._memmap_file is not None and os.path.exists(self._memmap_file):
+            if mpiutil.rank == 0:
+                os.remove(self._memmap_file)
 
 
 # Higher Level Data Containers
