@@ -49,8 +49,11 @@ Fourier transforming each of these two axes of the distributed array::
 
 """
 import os
-import collections
 import warnings
+try:
+    from collections import Mapping
+except ImportError:
+    from collections.abc import Mapping # >= python 3.10
 
 from mpi4py import MPI
 
@@ -60,7 +63,7 @@ from . import mpiarray
 warnings.warn('MPIDataset is deprecated in favour of memh5 and will be removed soon.')
 
 
-class MPIDataset(collections.Mapping):
+class MPIDataset(Mapping):
     """A container for distributed datasets.
 
     This can have both distributed and non-distributed parts and can load from

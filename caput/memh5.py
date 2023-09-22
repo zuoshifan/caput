@@ -64,10 +64,13 @@ Utility Functions
 import os
 import sys
 import time
-import collections
 import warnings
 import posixpath
 import gc
+try:
+    from collections import Mapping
+except ImportError:
+    from collections.abc import Mapping # >= python 3.10
 
 import numpy as np
 import h5py
@@ -81,7 +84,7 @@ from . import mpiarray
 
 
 
-class ro_dict(collections.Mapping):
+class ro_dict(Mapping):
     """A dict that is read-only to the user.
 
     This class isn't strictly read-only but it cannot be modified through the
@@ -235,7 +238,7 @@ class _MemObjMixin(object):
         return not self.__eq__(other)
 
 
-class _BaseGroup(_MemObjMixin, collections.Mapping):
+class _BaseGroup(_MemObjMixin, Mapping):
     """Implement the majority of the Group interface.
 
     Subclasses must setup the underlying storage in thier constructors, as well
