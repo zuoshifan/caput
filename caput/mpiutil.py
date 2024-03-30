@@ -224,7 +224,7 @@ def gather_list(lst, root=None, comm=_comm):
         return lst[:]
 
 
-def parallel_map(func, glist, root=None, method='con', comm=_comm):
+def parallel_map(func, glist, return_numpy_array=False, root=None, method='con', comm=_comm):
     """Apply a parallel map using MPI.
 
     Should be called collectively on the same list. All ranks return the full
@@ -236,6 +236,8 @@ def parallel_map(func, glist, root=None, method='con', comm=_comm):
         Function to apply.
     glist : list
         List of map over. Must be globally defined.
+    return_numpy_array : bool
+        Whether `func` returns an numpy array or not. If it returns consistant numpy array, then faster and more robust way for numpy array gathering will be used.
     root : None or Integer
         Which process should gather the results, all processes will gather the results if None.
     method: str
@@ -245,8 +247,8 @@ def parallel_map(func, glist, root=None, method='con', comm=_comm):
 
     Returns
     -------
-    results : list
-        Global list of results.
+    results : list or numpy array
+        Global list of results or a global numpy array (if return_numpy_array is True).
 
     """
 
@@ -255,7 +257,11 @@ def parallel_map(func, glist, root=None, method='con', comm=_comm):
 
     # If we're only on a single node, then just perform without MPI
     if comm is None or comm.size == 1:
-        return [func(item) for item in glist]
+        result = [ func(item) for item in glist ]
+        if return_numpy_array:
+            return np.array(result)
+        else:
+            return result
 
     # Pair up each list item with its position.
     zlist = list(enumerate(glist))
@@ -267,6 +273,49 @@ def parallel_map(func, glist, root=None, method='con', comm=_comm):
     flist = [(ind, func(item)) for ind, item in llist]
 
     barrier(comm=comm)
+
+
+    # better and more robust way for numpy array gathering
+    if return_numpy_array:
+        ilist = [ l[0] for l in flist ]
+        vlist = [ l[1] for l in flist ]
+        iarr = np.array(ilist, dtype=int).reshape(len(ilist), 1)
+        iarr = gather_array(iarr, axis=0, root=root, comm=comm)
+
+        lst_len = len(ilist)
+        len_arr = np.array(comm.allgather(lst_len))
+        if (len_arr == 0).all():
+            if root is None or root == comm.rank:
+                return np.array([])
+            else:
+                return None
+        non0_ind = np.where(len_arr != 0)[0][0]
+        shp = vlist[0].shape if lst_len > 0 else None
+        dtp = vlist[0].dtype if lst_len > 0 else None
+        non0_shp = comm.bcast(shp, root=non0_ind)
+        non0_dtp = comm.bcast(dtp, root=non0_ind)
+
+        if lst_len > 0:
+            varr = np.array(vlist)
+        else:
+            varr = np.array([], dtype=non0_dtp).reshape((0,)+non0_shp)
+
+        # varr = gather_array(varr, axis=0, root=root, comm=comm)
+
+        # gather real and imaginary part separately, error happens sometimes when gather a complex array directly
+        varr_real = gather_array(varr.real, axis=0, root=root, comm=comm)
+        if np.iscomplexobj(varr):
+            varr_imag = gather_array(varr.imag, axis=0, root=root, comm=comm)
+
+        if root is None or comm.rank == root:
+            if np.iscomplexobj(varr):
+                varr = varr_real + 1.0J * varr_imag
+            else:
+                varr = varr_real
+            return varr[np.argsort(iarr.reshape(-1))]
+        else:
+            return None
+
 
     rlist = None
     if root is None:
@@ -459,7 +508,13 @@ def gather_local(global_array, local_array, local_start, root=0, comm=_comm):
                 reqs = [ comm.Irecv([global_array, sub_type[si]], source=sr, tag=0) for (si, sr) in enumerate(nonempty_procs) ]
 
                 # Wait for requests to complete
-                MPI.Prequest.Waitall(reqs)
+                # MPI.Prequest.Waitall(reqs)
+                statuses = [ MPI.Status() for i in nonempty_procs ]
+                try:
+                    MPI.Prequest.Waitall(reqs, statuses=statuses)
+                except MPI.Exception:
+                    print([ status.Get_error() for status in statuses ])
+                    raise
 
             # Wait on send request. Important, as can get weird synchronisation
             # bugs otherwise as processes exit before completing their send.
