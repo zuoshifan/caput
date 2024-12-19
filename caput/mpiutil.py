@@ -585,6 +585,8 @@ def gather_array(local_array, axis=0, root=0, comm=_comm):
         else:
             local_dtype = list(local_dtypes)[0]
 
+        rank = comm.rank
+
     local_start = [0] * len(global_shape)
     local_start[axis] = np.cumsum([0] + local_axis_len)[rank]
     if root is None:
