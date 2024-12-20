@@ -14,6 +14,8 @@ Functions
 .. autosummary::
     :toctree: generated/
 
+   shared_rank_groups
+   not_shared_rank_groups
    active_comm
    active
    close
@@ -43,6 +45,7 @@ Functions
 """
 
 import sys
+import socket
 import itertools
 import warnings
 from types import ModuleType
@@ -54,6 +57,7 @@ size = 1
 _comm = None
 world = None
 rank0 = True
+hostname = socket.gethostname()
 
 ## Try to setup MPI and get the comm, rank and size.
 ## If not they should end up as rank=0, size=1.
@@ -82,6 +86,48 @@ try:
 
 except ImportError:
     warnings.warn("Warning: mpi4py not installed.")
+
+
+def shared_rank_groups(comm=_comm):
+    """Return a list of rank groups (i.e. a list) with rank numbers sharing the same host."""
+    if comm is None:
+        return [ [0] ]
+
+    # Gather all hostnames to rank 0
+    all_hostnames = comm.gather(hostname, root=0)
+
+    if rank == 0:
+        # Create a dictionary to store ranks by hostname
+        ranks_by_hostname = {}
+        for i, host in enumerate(all_hostnames):
+            if host not in ranks_by_hostname:
+                ranks_by_hostname[host] = []
+            ranks_by_hostname[host].append(i)
+
+        # Broadcast the ranks_by_hostname dictionary to all other processes
+        comm.bcast(ranks_by_hostname, root=0)
+    else:
+        # Receive the broadcasted dictionary
+        ranks_by_hostname = comm.bcast(None, root=0)
+
+    rank_groups = [ v for v in ranks_by_hostname.values() ]
+
+    return rank_groups
+
+def not_shared_rank_groups(comm=_comm):
+    """Return a list of rank groups (i.e. a list) with rank numbers all not sharing the same host."""
+    rank_groups = shared_rank_groups(comm)
+
+    transposed_rank_groups = []
+    max_cols = max(len(row) for row in rank_groups)
+    for j in range(max_cols):
+        new_row = []
+        for i in range(len(rank_groups)):
+            if j < len(rank_groups[i]):
+                new_row.append(rank_groups[i][j])
+        transposed_rank_groups.append(new_row)
+
+    return transposed_rank_groups
 
 
 class _close_message(object):
