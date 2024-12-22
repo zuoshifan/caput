@@ -16,6 +16,7 @@ Functions
 
    shared_rank_groups
    not_shared_rank_groups
+   merge_rank_groups
    active_comm
    active
    close
@@ -128,6 +129,16 @@ def not_shared_rank_groups(comm=_comm):
         transposed_rank_groups.append(new_row)
 
     return transposed_rank_groups
+
+def merge_rank_groups(rank_groups, merge_number=2):
+    """Merge adjacent `merge_number` subgroups in `rank_groups` into one."""
+    if merge_number <= 1:
+        return rank_groups
+
+    n, r = len(rank_groups) // merge_number, len(rank_groups) % merge_number
+    if r != 0:
+        n += 1
+    return [ list(itertools.chain(*rank_groups[i*merge_number:(i+1)*merge_number])) for i in range(n) ]
 
 
 class _close_message(object):
